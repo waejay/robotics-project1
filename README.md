@@ -4,7 +4,7 @@
 - John B. Nguyen
 - Juliana Osgood
 - Chris Jeon
-- Sung Jay Yoon
+- Sung Jae Yoon
 
 -------------------------
 
