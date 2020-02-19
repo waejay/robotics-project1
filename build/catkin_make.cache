@@ -1,0 +1,2 @@
+ch_171744_maze:project1
+-DCATKIN_DEVEL_PREFIX=/home/waejay/catkin_ws/devel -DCMAKE_INSTALL_PREFIX=/home/waejay/catkin_ws/install -G Unix Makefiles
