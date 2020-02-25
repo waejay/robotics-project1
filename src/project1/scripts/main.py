@@ -1,23 +1,40 @@
 #! /usr/bin/env python
 
 import rospy
-import sys
+import sys, select, termios, tty
+import math
 
 from nav_msgs.msg import Odometry       # Determine relative position of robot
 from geometry_msgs.msg import Twist     # Control linear/angular velocity
 from sensor_msgs.msg import LaserScan   # Calculate distance from objects
+from kobuki_msgs.msg import BumperEvent # Detect collisions
 
 
 class Controller:
 
-    def __init__(self):
-        self.name = "Controller object"
-        self.rate = rospy.Rate(10)      # TODO: figure out what this does LMAO
+    class Coord:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
 
-        # subscribe to laserscan and odometry to
-        # get laser data and positional data
-        rospy.Subscriber('/laserscan', LaserScan, self.laserscan_callback) 
+    def __init__(self):
+        rospy.init_node("Controller") # initialize node
+
+        self.name = "Controller object"
+        self.rate = rospy.Rate(10)    # allow node to spin at 10hz
+
+        rospy.Subscriber('/laserscan', LaserScan, self.laserscan_callback)
         rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        rospy.Subscriber('/mobile_base/events/bumper', BumperEvent,
+                         self.bumper_callback)
+
+
+        self.laser = None
+        self.odom = None
+        self.bumper = None
+
+        self.prev_coord = self.Coord(0, 0)
+        self.total_distance = 0
 
         # publish to this topic to move the bot
         self.velPub = rospy.Publisher('/mobile_base/commands/velocity', Twist, queue_size =
@@ -27,47 +44,112 @@ class Controller:
         self.vel = Twist()
 
         # Current state of turtle bot
-        # free = no obstacles nearby
-        # asymmetricDetected = ...
-        # symmetricDetected = ...
         self.state = "free"
 
-    def start(self):
+    def laserscan_callback(self, laser_message):
+        self.laser = laser_message
 
-        # initialize node
-        rospy.init_node("Controller")
+    def odom_callback(self, odom_message):
+        self.odom = odom_message
+
+    def bumper_callback(self, bumper_msg):
+        self.bumper = bumper_msg
+
+    def distance(self, prev_coord, curr_coord):
+        x1, y1 = prev_coord.x, prev_coord.y
+        x2, y2 = curr_coord.x, curr_coord.y
+
+        dist = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+        return dist
+
+    def resetCoord(self):
+        self.prev_coord.x = self.odom.pose.pose.position.x
+        self.prev_coord.y = self.odom.pose.pose.position.y
+
+    def halt(self):
+        self.vel.linear.x = 0.0
+        self.vel.angular.x = 0.0
+
+    def rotate(self, rad = 0.26):
+            self.vel.angular.z = rad
+            self.velPub.publish(self.vel)
+
+    def start(self):
+        print("Running Controller.start()")
+
+        if not self.bumper:
+            self.vel.linear.x = 0.2
 
         # while the robot hasn't shut down
+        while not rospy.is_shutdown():
 
-            # take movement directions from user (user input movement)
- 
-            # if robot has moved 1 ft, randomly change angle (within +-15 deg)
+            # --- Priority 1: Detect collisions ---
+            if self.bumper:
+                if self.bumper.state == BumperEvent.PRESSED:
+                    print("Turtlebot bumped")
+                    self.halt()
 
-            # if robot is 1 ft away from an object (by looking at the middle
-            # laser)
-                # check robot state (i.e. "symmetricDetected",
-                # "asymmetricDetected")
+            # --- Priority 3/4: Obstacles ---
+            if self.laser:
+                # if robot is 1 ft away from an object (by looking at the middle
+                middleLaserValue = self.laser.ranges[180]
+                print(middleLaserValue)
+                if middleLaserValue <= 1.0:
+                    self.halt()
+                # laser)
+                    # check robot state (i.e. "symmetricDetected",
+                    # "asymmetricDetected")
 
-                # if symmetricDetected:
-                    # halt robot motion
-                    # change angle 180 deg
-                    # change state back to free state
-                    # continue
+                    # if symmetricDetected:
+                        # halt robot motion
+                        # change angle 180 deg
+                        # change state back to free state
+                        # continue
 
-                # if asymmetricDetected:
-                    # halt robot
-                    # move away from closer object (not towards the second
-                        # object
-                    # change state back to free state
-                    # continue
-        
-        self.velPub.publish(vel)    # publish velocity to robot
+                    # if asymmetricDetected:
+                        # halt robot
+                        # move away from closer object (not towards the second
+                            # object
+                        # change state back to free state
+                        # continue
+
+            # if robot has moved 1 ft, randomly change angle 
+            # (within +-15 deg aka +-0.26 rad)
+            if self.odom:
+
+                # Initialize starting coordinates
+                if self.prev_coord.x == 0 and self.prev_coord.y == 0:
+                    self.prev_coord = self.Coord(self.odom.pose.pose.position.x,
+                                    self.odom.pose.pose.position.y)
+
+
+                # TODO: ------ debugging purposes (print to console) --------
+                '''
+                print(self.odom.pose.pose.position)
+                print("Distance increment = %f" % self.distance(self.prev_coord,
+                                    self.odom.pose.pose.position))
+                print("Total distance (so far): %f" % self.total_distance)
+                '''
+                # TODO:# ----------------------------------------------------
+
+
+
+                # Increment total distance every 0.1 unit distance
+                if self.distance(self.prev_coord,
+                                 self.odom.pose.pose.position) >= 0.05:
+                    self.total_distance += self.distance(self.prev_coord,
+                                    self.odom.pose.pose.position)
+                    self.resetCoord()
+
+                if self.total_distance >= 1.0:
+                    self.total_distance = 0
+            self.velPub.publish(self.vel)    # publish velocity to robot
+            self.rate.sleep()
         rospy.spin()                # keep function running continuously until user tells it
                                     # to stop
 
 if __name__ == '__main__':
     controller = Controller()
     controller.start()
-
-    print("End program.")
 
