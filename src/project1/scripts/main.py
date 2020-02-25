@@ -3,12 +3,35 @@
 import rospy
 import math
 import random
+import sys, select, termios, tty
 from threading import Thread, Lock
 
 from nav_msgs.msg import Odometry       # Determine relative position of robot
 from geometry_msgs.msg import Twist     # Control linear/angular velocity
 from sensor_msgs.msg import LaserScan   # Calculate distance from objects
 from kobuki_msgs.msg import BumperEvent # Detect collisions
+
+'''
+CS4023 - Intelligent Robotics
+Project 1: Reactive Robotics using ROS and Gazebo
+
+Collaborators:
+    - Chris Jeon
+    - Juliana Osgood
+    - Sung Jae Yoon
+    - John B. Nguyen
+
+Caution: the following code was developed on a personal Ubuntu system and
+relies on modifications of the system itself (Hokuyo laser scanner, sudo
+commands, etc) and may not work on systems without these dependencies
+
+Copyright: the following code is influenced by the following resources:
+    - Github: g40st/ROS_maze_challenge
+    - ROS: turtlebot_teleop/turtlebot_teleop_key
+
+Code inspired from these resources are specifically commented. All others are
+original or from ROS documentation
+'''
 
 class Controller:
     """Driver class for controlling Turtlebot behavior."""
@@ -26,9 +49,11 @@ class Controller:
         self.name = "Controller object"
         self.rate = rospy.Rate(10)      # allow node to 'spin' at 10hz
 
-        # Subscribe to get laser, positional, and bumper data
+        # Subscribe to get laser, positional, velocity, and bumper data
         rospy.Subscriber('/laserscan', LaserScan, self.laserscan_callback)
         rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        rospy.Subscriber('/mobile_base/commands/velocity', Twist,
+                         self.velocity_callback)
         rospy.Subscriber('/mobile_base/events/bumper', BumperEvent,
                          self.bumper_callback)
 
@@ -39,6 +64,7 @@ class Controller:
         self.laser = None                   # LaserScan data
         self.odom = None                    # Odometry data
         self.bumper = None                  # Bumper data
+        self.currVel = None                 # current velocity data
         self.mutex = Lock()                 # locks Turtlebot for strict rotation
         self.distanceToWall = 0.3048        # 0.3048 m = 1 meter
         self.prev_coord = self.Coord(0, 0)  # track Turtlebot's previous coordinate
@@ -56,6 +82,10 @@ class Controller:
     def bumper_callback(self, bumper_msg):
         """Retrieves BumperEvent topic's data"""
         self.bumper = bumper_msg
+
+    def velocity_callback(self, vel_msg):
+        """Retrieves Velocity data"""
+        self.currVel = vel_msg
 
     def distance(self, prev_coord, curr_coord):
         """Calculates distance between two cartesian coordinates
@@ -78,6 +108,21 @@ class Controller:
         """Halt Turtlebot's motion"""
         self.vel.linear.x = 0.0
         self.vel.angular.x = 0.0
+
+    def getKey(self):
+        """Get pressed key from system"""
+
+        # Note: the following is taken from ROS's turtlebot_teleop_key
+        #       script
+        tty.setraw(sys.stdin.fileno())
+        rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+        if rlist:
+            key = sys.stdin.read(1)
+        else:
+            key = ''
+
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        return key
 
     def rotate_random(self):
         """Rotates Turtlebot randomly within +-15 deg
@@ -182,9 +227,6 @@ class Controller:
         """
         print("Running Controller.start()")
 
-        # Move forward if no collision detected
-        self.vel.linear.x = 0.2
-
         while not rospy.is_shutdown():
 
             ''' --- Priority 1: Detect collisions --- '''
@@ -195,8 +237,27 @@ class Controller:
                     self.halt()
 
             '''  --- Priority 2: User-controlled movement --- '''
-            # User controls movement using separate node package
-            # i.e. turtlebot_teleop
+            # Note: the following is taken from ROS's turtlebot_teleop_key
+            #       script
+            if self.getKey():
+                key = self.getKey()
+                if key == '\x03':
+                    rospy.signal_shutdown("Shutdown signaled via Control-C")
+                    break
+                elif key == 'j':
+                    self.vel.linear.x = 0.2
+                    self.vel.angular.z = 2.0
+                    self.velPub.publish(self.vel)
+                elif key == 'l':
+                    self.vel.linear.x = 0.2
+                    self.vel.angular.z = -2.0
+                    self.velPub.publish(self.vel)
+                elif key == ' ':
+                    self.vel.linear.x = 0.0
+                    self.vel.angular.z = 0.0
+                    self.velPub.publish(self.vel)
+                    continue
+
 
             ''' --- Priority 3/4: Obstacles --- '''
             if self.laser:
@@ -208,7 +269,6 @@ class Controller:
 
                 # If laser detects object 1 ft away
                 if middleLaserValue <= self.distanceToWall:
-                    print("LaserScan: middle laser detected 1.0 ft")
 
                     # Stop and rotate 180 degrees
                     self.halt()
@@ -219,14 +279,12 @@ class Controller:
 
                 # If laser detects object towards the left
                 if leftLaserValue <= self.distanceToWall:
-                    print("LaserScan: left laser detected 1.0 fit")
 
                     # Reflexively rotate right while moving forward
                     self.rotate_right()
 
                 # If laser detects object towards the right
                 elif rightLaserValue <= self.distanceToWall:
-                    print("LaserScan: right laser detected 1.0 fit")
 
                     # Reflexively rotate left while moving forward
                     self.rotate_left()
@@ -259,13 +317,20 @@ class Controller:
                     self.total_distance = 0
                     self.rotate_random()
 
+            ''' --- Priority 6: Drive forward --- '''
+            # Move forward 
+            if not self.getKey() == 'j' or not self.getKey() == 'l':
+                self.vel.linear.x = 0.2
+
             self.velPub.publish(self.vel)    # Publish our new velocity data to
                                              # the Turtlebot
             self.rate.sleep()
+            # termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
         rospy.spin()                         # Keep function running continuously until user tells it
                                              # to stop
 
 if __name__ == '__main__':
+    settings = termios.tcgetattr(sys.stdin)
     controller = Controller()
     controller.start()
 
