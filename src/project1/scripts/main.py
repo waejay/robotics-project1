@@ -1,13 +1,15 @@
 #! /usr/bin/env python
 
 import rospy
-import sys, select, termios, tty
 import math
+import random
+from threading import Thread, Lock
 
 from nav_msgs.msg import Odometry       # Determine relative position of robot
 from geometry_msgs.msg import Twist     # Control linear/angular velocity
 from sensor_msgs.msg import LaserScan   # Calculate distance from objects
 from kobuki_msgs.msg import BumperEvent # Detect collisions
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 
 class Controller:
@@ -32,6 +34,7 @@ class Controller:
         self.laser = None
         self.odom = None
         self.bumper = None
+        self.mutex = Lock()
 
         self.prev_coord = self.Coord(0, 0)
         self.total_distance = 0
@@ -71,9 +74,69 @@ class Controller:
         self.vel.linear.x = 0.0
         self.vel.angular.x = 0.0
 
-    def rotate(self, rad = 0.26):
-            self.vel.angular.z = rad
+    def rotate_random(self):
+        relative_angle = random.uniform(-0.26, 0.26)
+        current_angle = 0
+        t0 = rospy.Time.now().to_sec()
+
+        if relative_angle > 0:
+            angular_speed = self.vel.angular.z = 0.5
+            while(current_angle < relative_angle):
+                self.velPub.publish(self.vel)
+                t1 = rospy.Time.now().to_sec()
+                current_angle = abs(angular_speed)*(t1-t0)
+        else:
+            angular_speed = self.vel.angular.z = -0.5
+            while(current_angle < relative_angle):
+                self.velPub.publish(self.vel)
+                t1 = rospy.Time.now().to_sec()
+                current_angle = abs(angular_speed)*(t1-t0)
+
+    def rotate_left(self, rad = 0.45):
+        angular_speed = self.vel.angular.z = 0.5
+        relative_angle = rad
+        current_angle = 0
+        t0 = rospy.Time.now().to_sec()
+
+        while(current_angle < relative_angle):
             self.velPub.publish(self.vel)
+            t1 = rospy.Time.now().to_sec()
+            current_angle = abs(angular_speed)*(t1-t0)
+
+    def rotate_right(self, rad = 0.45):
+        angular_speed = self.vel.angular.z = -0.5
+        relative_angle = rad
+        current_angle = 0
+        t0 = rospy.Time.now().to_sec()
+
+        while(current_angle < relative_angle):
+            self.velPub.publish(self.vel)
+            t1 = rospy.Time.now().to_sec()
+            current_angle = abs(angular_speed)*(t1-t0)
+
+    def rotate_angle(self, angle, speed):
+        self.mutex.acquire()
+        try:
+            angular_speed = speed
+            relative_angle = angle
+            self.vel.linear.x = 0.0
+            self.vel.angular.z = angular_speed
+
+            # setting the current time for distance calculus
+            t0 = rospy.Time.now().to_sec()
+            current_angle = 0
+
+            while(current_angle < relative_angle):
+                self.velPub.publish(self.vel)
+                t1 = rospy.Time.now().to_sec()
+                current_angle = abs(angular_speed)*(t1-t0)
+
+            # forcing the robot to stop after rotation
+            self.vel.linear.x = 0.0
+            self.vel.angular.z = 0
+            self.velPub.publish(self.vel)
+        finally:
+            self.mutex.release()
 
     def start(self):
         print("Running Controller.start()")
@@ -84,6 +147,7 @@ class Controller:
         # while the robot hasn't shut down
         while not rospy.is_shutdown():
 
+
             # --- Priority 1: Detect collisions ---
             if self.bumper:
                 if self.bumper.state == BumperEvent.PRESSED:
@@ -93,10 +157,26 @@ class Controller:
             # --- Priority 3/4: Obstacles ---
             if self.laser:
                 # if robot is 1 ft away from an object (by looking at the middle
+                leftLaserValue = self.laser.ranges[250]
                 middleLaserValue = self.laser.ranges[180]
-                print(middleLaserValue)
+                rightLaserValue = self.laser.ranges[110]
+
                 if middleLaserValue <= 1.0:
+                    print("middle laser detected 1.0 fit")
                     self.halt()
+                    self.rotate_angle(3.14, -1.5)
+                    self.vel.linear.x = 0.2
+
+                if leftLaserValue <= 1.0:
+                    #self.vel.angular.z = -0.5
+                    self.rotate_right()
+                    print("left laser detected 1.0 fit")
+                elif rightLaserValue <= 1.0:
+                    print("right laser detected 1.0 fit")
+                    self.rotate_left()
+                else:
+                    self.vel.angular.z = 0.0
+
                 # laser)
                     # check robot state (i.e. "symmetricDetected",
                     # "asymmetricDetected")
@@ -133,17 +213,16 @@ class Controller:
                 '''
                 # TODO:# ----------------------------------------------------
 
-
-
-                # Increment total distance every 0.1 unit distance
-                if self.distance(self.prev_coord,
-                                 self.odom.pose.pose.position) >= 0.05:
+                if self.distance(self.prev_coord, self.odom.pose.pose.position) >= 0.05:
                     self.total_distance += self.distance(self.prev_coord,
                                     self.odom.pose.pose.position)
                     self.resetCoord()
 
+                # Increment total distance every 0.1 unit distance
                 if self.total_distance >= 1.0:
                     self.total_distance = 0
+                    self.rotate_random()
+
             self.velPub.publish(self.vel)    # publish velocity to robot
             self.rate.sleep()
         rospy.spin()                # keep function running continuously until user tells it
