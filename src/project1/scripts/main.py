@@ -35,6 +35,7 @@ class Controller:
         self.odom = None
         self.bumper = None
         self.mutex = Lock()
+        self.distanceToWall = 0.3048
 
         self.prev_coord = self.Coord(0, 0)
         self.total_distance = 0
@@ -93,7 +94,7 @@ class Controller:
                 current_angle = abs(angular_speed)*(t1-t0)
 
     def rotate_left(self, rad = 0.45):
-        angular_speed = self.vel.angular.z = 0.5
+        angular_speed = self.vel.angular.z = 0.8
         relative_angle = rad
         current_angle = 0
         t0 = rospy.Time.now().to_sec()
@@ -104,7 +105,7 @@ class Controller:
             current_angle = abs(angular_speed)*(t1-t0)
 
     def rotate_right(self, rad = 0.45):
-        angular_speed = self.vel.angular.z = -0.5
+        angular_speed = self.vel.angular.z = -0.8
         relative_angle = rad
         current_angle = 0
         t0 = rospy.Time.now().to_sec()
@@ -161,20 +162,20 @@ class Controller:
                 middleLaserValue = self.laser.ranges[180]
                 rightLaserValue = self.laser.ranges[110]
 
-                if middleLaserValue <= 1.0:
+                if middleLaserValue <= self.distanceToWall:
                     print("middle laser detected 1.0 fit")
                     self.halt()
                     self.rotate_angle(3.14, -1.5)
                     self.vel.linear.x = 0.2
 
-                if leftLaserValue <= 1.0:
-                    #self.vel.angular.z = -0.5
-                    self.rotate_right()
+                if leftLaserValue <= self.distanceToWall:
                     print("left laser detected 1.0 fit")
-                elif rightLaserValue <= 1.0:
+                    self.rotate_right()
+                elif rightLaserValue <= self.distanceToWall:
                     print("right laser detected 1.0 fit")
                     self.rotate_left()
                 else:
+                    self.vel.linear.x =  0.2
                     self.vel.angular.z = 0.0
 
                 # laser)
